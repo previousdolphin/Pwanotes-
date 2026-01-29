@@ -3,73 +3,75 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Local Notes PWA</title>
+    <title>Super Notes PWA</title>
     <link rel="manifest" href="manifest.json">
     <style>
-        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; }
-        textarea { width: 100%; height: 150px; font-size: 16px; margin-bottom: 10px; padding: 10px; box-sizing: border-box; }
-        button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #333; color: white; border: none; border-radius: 4px; }
-        #installBtn { display: none; background: #007bff; margin-bottom: 20px; }
-        .note-card { border: 1px solid #ddd; padding: 10px; margin-top: 10px; border-radius: 4px; background: #f9f9f9; }
-        .ios-prompt { display: none; background: #eef; padding: 10px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #ccd; }
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; padding-bottom: 80px; }
+        
+        /* Input Zone */
+        .input-group { background: #f0f4f8; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        textarea { width: 100%; height: 100px; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; resize: vertical; }
+        .controls { display: flex; gap: 10px; margin-top: 10px; align-items: center; }
+        button { padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button.secondary { background: #6c757d; }
+        
+        /* Note Cards */
+        .note-card { border: 1px solid #eee; padding: 15px; margin-top: 15px; border-radius: 8px; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .note-date { font-size: 0.8em; color: #888; margin-bottom: 5px; }
+        .note-img { max-width: 100%; height: auto; margin-top: 10px; border-radius: 4px; display: block; }
+        
+        /* Install Prompts */
+        #installBtn { display: none; width: 100%; margin-bottom: 10px; background: #28a745; }
     </style>
 </head>
 <body>
 
-    <button id="installBtn">📲 Install App to Home Screen</button>
-    <div id="iosPrompt" class="ios-prompt">
-        To install on iOS: Tap the <strong>Share</strong> icon and select <strong>"Add to Home Screen"</strong>.
-    </div>
+    <button id="installBtn">📲 Install App</button>
 
-    <h1>My Local Notes</h1>
-    
-    <textarea id="noteInput" placeholder="Write a note..."></textarea>
-    <button onclick="saveNote()">Save Note</button>
+    <h1>Super Notes</h1>
+
+    <div class="input-group">
+        <textarea id="noteInput" placeholder="Write a note or share text from another app..."></textarea>
+        
+        <div class="controls">
+            <input type="file" id="imageInput" accept="image/*">
+        </div>
+        
+        <div class="controls" style="margin-top: 10px;">
+            <button onclick="saveNote()">Save Note</button>
+            <button class="secondary" onclick="enableNotifications()">🔔 Enable Alerts</button>
+            <button class="secondary" onclick="exportData()">💾 Export Data</button>
+        </div>
+    </div>
 
     <div id="notesList"></div>
 
     <script>
-        // --- 1. SERVICE WORKER REGISTRATION ---
+        // --- 1. SETUP & SERVICE WORKER ---
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('sw.js');
+            navigator.serviceWorker.register('sw.js').catch(console.error);
         }
 
-        // --- 2. INSTALLATION LOGIC ---
-        let deferredPrompt;
-        const installBtn = document.getElementById('installBtn');
-        const iosPrompt = document.getElementById('iosPrompt');
+        // --- 2. HANDLE SHARE TARGET (INCOMING DATA) ---
+        // Checks if the app was opened via the "Share" menu
+        window.addEventListener('DOMContentLoaded', () => {
+            const params = new URLSearchParams(window.location.search);
+            const sharedTitle = params.get('title');
+            const sharedText = params.get('text');
+            const sharedUrl = params.get('url');
 
-        // Check for iOS to show manual instructions
-        const isIos = /iPhone|iPad|iPod/.test(navigator.userAgent) && !window.MSStream;
-        const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
-
-        if (isIos && !isStandalone) {
-            iosPrompt.style.display = 'block';
-        }
-
-        // Capture the Android/Desktop install prompt
-        window.addEventListener('beforeinstallprompt', (e) => {
-            e.preventDefault();
-            deferredPrompt = e;
-            installBtn.style.display = 'block'; // Show our custom button
-        });
-
-        installBtn.addEventListener('click', async () => {
-            if (deferredPrompt) {
-                deferredPrompt.prompt();
-                const { outcome } = await deferredPrompt.userChoice;
-                if (outcome === 'accepted') {
-                    installBtn.style.display = 'none';
-                }
-                deferredPrompt = null;
+            if (sharedTitle || sharedText || sharedUrl) {
+                const combined = [sharedTitle, sharedText, sharedUrl].filter(Boolean).join('\n');
+                document.getElementById('noteInput').value = combined;
+                // Clean URL so refreshing doesn't re-trigger share
+                window.history.replaceState({}, document.title, window.location.pathname);
             }
         });
 
-        // --- 3. INDEXEDDB DATABASE LOGIC ---
+        // --- 3. DATABASE (IndexedDB) ---
         let db;
-        const request = indexedDB.open("NotesDB", 1);
+        const request = indexedDB.open("SuperNotesDB", 1);
 
-        // Create Schema
         request.onupgradeneeded = (e) => {
             const db = e.target.result;
             if (!db.objectStoreNames.contains("notes")) {
@@ -79,43 +81,126 @@
 
         request.onsuccess = (e) => {
             db = e.target.result;
-            loadNotes(); // Load notes when DB is ready
+            loadNotes();
         };
 
-        // Save Function
-        function saveNote() {
+        // --- 4. CORE FEATURES ---
+
+        // Save (Text + Image Blob + Sync Tag)
+        async function saveNote() {
             const text = document.getElementById('noteInput').value;
-            if (!text) return;
+            const fileInput = document.getElementById('imageInput');
+            const file = fileInput.files[0];
 
-            const transaction = db.transaction(["notes"], "readwrite");
-            const store = transaction.objectStore("notes");
-            store.add({ text: text, date: new Date().toLocaleDateString() });
+            if (!text && !file) return;
 
-            transaction.oncomplete = () => {
+            const note = {
+                text: text,
+                image: file || null, // Store binary blob directly!
+                date: new Date().toLocaleString(),
+                synced: false // Tag for background sync
+            };
+
+            const tx = db.transaction(["notes"], "readwrite");
+            tx.objectStore("notes").add(note);
+
+            tx.oncomplete = () => {
                 document.getElementById('noteInput').value = "";
+                fileInput.value = ""; // Reset file input
                 loadNotes();
+                triggerSync(); // Register sync task
+                sendLocalNotification(); // Trigger local alert
             };
         }
 
-        // Load Function
+        // Load & Render
         function loadNotes() {
             const list = document.getElementById('notesList');
             list.innerHTML = "";
-            
-            const transaction = db.transaction(["notes"], "readonly");
-            const store = transaction.objectStore("notes");
-            const request = store.getAll();
+            const tx = db.transaction(["notes"], "readonly");
+            const req = tx.objectStore("notes").getAll();
 
-            request.onsuccess = () => {
-                // Display notes in reverse order (newest first)
-                request.result.reverse().forEach(note => {
+            req.onsuccess = () => {
+                req.result.reverse().forEach(note => {
                     const div = document.createElement("div");
                     div.className = "note-card";
-                    div.innerHTML = `<strong>${note.date}</strong><br>${note.text}`;
+                    
+                    let content = `<div class="note-date">${note.date}</div><div>${note.text}</div>`;
+                    
+                    // Render Blob as Image
+                    if (note.image) {
+                        const imgUrl = URL.createObjectURL(note.image);
+                        content += `<img src="${imgUrl}" class="note-img" onload="URL.revokeObjectURL(this.src)">`;
+                    }
+                    
+                    div.innerHTML = content;
                     list.appendChild(div);
                 });
             };
         }
+
+        // --- 5. BACKGROUND SYNC REGISTRATION ---
+        function triggerSync() {
+            if ('serviceWorker' in navigator && 'SyncManager' in window) {
+                navigator.serviceWorker.ready.then(reg => {
+                    // Registers a 'sync' event that fires when online
+                    return reg.sync.register('sync-notes');
+                }).catch(err => console.log("Sync not supported"));
+            }
+        }
+
+        // --- 6. LOCAL NOTIFICATIONS ---
+        function enableNotifications() {
+            Notification.requestPermission().then(permission => {
+                if (permission === 'granted') {
+                    alert("Notifications enabled! You'll get a silent alert when you save.");
+                }
+            });
+        }
+
+        function sendLocalNotification() {
+            if (Notification.permission === 'granted') {
+                new Notification("Note Saved", {
+                    body: "Your note is safe in local storage.",
+                    icon: "https://via.placeholder.com/192.png?text=OK"
+                });
+            }
+        }
+
+        // --- 7. EXPORT DATA ---
+        function exportData() {
+            const tx = db.transaction(["notes"], "readonly");
+            const req = tx.objectStore("notes").getAll();
+
+            req.onsuccess = () => {
+                // Remove Blob objects for JSON export (Blobs don't stringify)
+                const cleanData = req.result.map(n => ({
+                    ...n, 
+                    image: n.image ? "(Image Binary Data - Not Exported)" : null 
+                }));
+                
+                const blob = new Blob([JSON.stringify(cleanData, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `notes_backup.json`;
+                a.click();
+            };
+        }
+
+        // --- 8. INSTALL PROMPT (Standard) ---
+        let deferredPrompt;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            const btn = document.getElementById('installBtn');
+            btn.style.display = 'block';
+            btn.addEventListener('click', () => {
+                deferredPrompt.prompt();
+                deferredPrompt = null;
+                btn.style.display = 'none';
+            });
+        });
     </script>
 </body>
 </html>
